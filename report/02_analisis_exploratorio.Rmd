@@ -70,7 +70,11 @@ La frecuencia representa **reclamaciones por asegurado registrado** en la base y
 La fuente de trabajo es el archivo `2025 AP Individual Bases.xlsx`, con las hojas `Emision` y `Siniestros`. La primera aporta el número de asegurados expuestos y la segunda contiene el número de reclamaciones y los montos pagados. Ambas se importan omitiendo la primera fila, conforme a la estructura utilizada en el procesamiento original.
 
 ```{r lectura-datos}
-ruta_archivo <- "data/raw/2025 AP Individual Bases.xlsx"
+ruta_archivo <- here::here(
+  "data",
+  "raw",
+  "2025 AP Individual Bases.xlsx"
+)
 
 if (!file.exists(ruta_archivo)) {
   stop(paste("No se encontró el archivo:", ruta_archivo,
