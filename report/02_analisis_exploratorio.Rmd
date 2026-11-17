@@ -1,0 +1,125 @@
+---
+title: "Tarificación de Accidentes Personales - Análisis Exploratorio"
+date: "`r Sys.Date()`"
+output:
+  pdf_document:
+    toc: true
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, warning = FALSE, message = FALSE, fig.align = 'center', out.width = '100%')
+options(scipen = 999)
+datos <- read.csv("../data/processed/tabla_consolidada_sesas.csv", check.names = FALSE)
+```
+
+## 2.1 Análisis Univariado de Impulsores de Riesgo
+
+El análisis univariado nos permite observar la distribución aislada de la siniestralidad (frecuencia relativa) sobre factores clave. Esta exploración inicial confirma qué atributos demográficos y comerciales disparan la concentración del riesgo. En el caso del Sexo, se evalúa la exposición diferencial; en Cobertura, el impacto de cada protección; y a nivel estatal, se filtran entidades con masa crítica (>100 asegurados) para definir los focos rojos geográficos de la siniestralidad.
+
+```{r univariado}
+# Frecuencia por Sexo
+freq.sexo <- aggregate(cbind(`NUMERO DE ASEGURADOS`, `NUMERO DE RECLAMACIONES`) ~ SEXO, data = datos, FUN = sum)
+freq.sexo$Frecuencia <- freq.sexo$`NUMERO DE RECLAMACIONES` / freq.sexo$`NUMERO DE ASEGURADOS`
+knitr::kable(freq.sexo[order(-freq.sexo$Frecuencia), ], caption = "Frecuencia por Sexo", row.names = FALSE, digits = 6)
+
+# Frecuencia por Cobertura
+freq.cob <- aggregate(cbind(`NUMERO DE ASEGURADOS`, `NUMERO DE RECLAMACIONES`) ~ COBERTURA, data = datos, FUN = sum)
+freq.cob$Frecuencia <- freq.cob$`NUMERO DE RECLAMACIONES` / freq.cob$`NUMERO DE ASEGURADOS`
+knitr::kable(freq.cob[order(-freq.cob$Frecuencia), ], caption = "Frecuencia por Cobertura", row.names = FALSE, digits = 6)
+
+# Top 5 Entidades
+freq.entidad <- aggregate(cbind(`NUMERO DE ASEGURADOS`, `NUMERO DE RECLAMACIONES`) ~ ENTIDAD, data = datos, FUN = sum)
+freq.entidad$Frecuencia <- freq.entidad$`NUMERO DE RECLAMACIONES` / freq.entidad$`NUMERO DE ASEGURADOS`
+freq.entidad.valida <- subset(freq.entidad, `NUMERO DE ASEGURADOS` > 100)
+top.5.entidades <- head(freq.entidad.valida[order(-freq.entidad.valida$Frecuencia), ], 5)
+knitr::kable(top.5.entidades, caption = "Top 5 Entidades con Mayor Frecuencia", row.names = FALSE, digits = 6)
+```
+
+## 2.2 Gráficos Univariados
+
+La visualización corporativa evidencia qué tipos de accidentes resultan más costosos (Severidad) y qué estados presentan la mayor siniestralidad (Frecuencia). Este análisis justifica qué coberturas requieren un factor de recargo tarifario por intensidad de pagos y qué entidades presentan una alta repetición de siniestros, consolidando la necesidad de aplicar primas base diferenciadas.
+
+```{r graficos-univariados-sev, fig.width=6.5, fig.height=4.2}
+# Gráfico 1: Severidad por Cobertura
+par(bty = "n", mar = c(4.5, 13.5, 3, 1.5), family = "sans", las = 1)
+sev.cobertura <- aggregate(cbind(`MONTO PAGADO`, `NUMERO DE RECLAMACIONES`) ~ COBERTURA, data = datos, FUN = sum)
+sev.cobertura$Severidad <- ifelse(sev.cobertura$`NUMERO DE RECLAMACIONES` > 0, 
+                                  sev.cobertura$`MONTO PAGADO` / sev.cobertura$`NUMERO DE RECLAMACIONES`, 0)
+sev.cobertura <- sev.cobertura[order(sev.cobertura$Severidad), ]
+max.sev.cob <- max(sev.cobertura$Severidad, na.rm = TRUE)
+
+barplot(sev.cobertura$Severidad, names.arg = sev.cobertura$COBERTURA, horiz = TRUE,
+        col = "#3498db", border = NA, xlab = "Severidad Promedio (MXN)",
+        xlim = c(0, max.sev.cob * 1.15),
+        main = "Severidad por Tipo de Cobertura", cex.names = 0.7, cex.axis = 0.75, cex.lab = 0.85, cex.main = 1)
+```
+
+```{r graficos-univariados-freq, fig.width=6.5, fig.height=3.2}
+# Gráfico 2: Frecuencia Top 5 Entidades
+par(bty = "n", mar = c(4.5, 8.5, 3, 1.5), family = "sans", las = 1)
+top.5.plot <- top.5.entidades[order(top.5.entidades$Frecuencia), ]
+max.freq.ent <- max(top.5.plot$Frecuencia, na.rm = TRUE)
+
+barplot(top.5.plot$Frecuencia, names.arg = top.5.plot$ENTIDAD, horiz = TRUE,
+        col = "#e67e22", border = NA, xlab = "Frecuencia Relativa",
+        xlim = c(0, max.freq.ent * 1.15),
+        main = "Top 5 Entidades con Mayor Frecuencia", cex.names = 0.8, cex.axis = 0.75, cex.lab = 0.85, cex.main = 1)
+```
+
+## 2.3 Análisis Multivariable: Frecuencia (Edad vs. Sexo)
+
+El cruce de llaves tarifarias permite mapear la evolución de la siniestralidad (hombres vs. mujeres) en función de la edad. Se observa que el riesgo no es constante; las curvas exponen divergencias o cruces demográficos críticos a lo largo del tiempo, evidenciando ventanas de edad en donde un sexo asume desproporcionadamente una mayor frecuencia de siniestros, dictando recargos por edad alcanzada.
+
+```{r edad-sexo, fig.width=6.5, fig.height=4}
+freq.edad.sexo <- aggregate(cbind(`NUMERO DE ASEGURADOS`, `NUMERO DE RECLAMACIONES`) ~ EDAD + SEXO, data = datos, FUN = sum)
+freq.edad.sexo$Frecuencia <- freq.edad.sexo$`NUMERO DE RECLAMACIONES` / freq.edad.sexo$`NUMERO DE ASEGURADOS`
+
+datos.f <- subset(freq.edad.sexo, SEXO %in% c("Femenino", "Mujer", "M", "F"))
+datos.m <- subset(freq.edad.sexo, SEXO %in% c("Masculino", "Hombre", "H"))
+max.freq <- max(freq.edad.sexo$Frecuencia, na.rm = TRUE)
+
+par(bty = "n", mar = c(4.5, 5.5, 3, 1.5), family = "sans", las = 1)
+plot(datos.f$EDAD, datos.f$Frecuencia, type = "l", col = "#2c3e50", lwd = 2, ylim = c(0, max.freq * 1.15),
+     xlab = "Edad", ylab = "", 
+     main = "Curva de Frecuencia por Edad y Sexo", cex.main = 1, col.main = "#333333", cex.axis = 0.8, cex.lab = 0.85)
+mtext("Frecuencia de Siniestralidad", side = 2, line = 4.2, las = 0, cex = 0.85)
+lines(datos.m$EDAD, datos.m$Frecuencia, col = "#e74c3c", lwd = 2)
+legend("topleft", legend = c("Femenino", "Masculino"), col = c("#2c3e50", "#e74c3c"), lwd = 2, bty = "n", cex = 0.85)
+```
+
+## 2.4 Cruce Multivariable Específico: Severidad en Entidad Crítica
+
+Para realizar un análisis factorial de profundidad, se aisló el estado (Entidad) con el índice más alto de siniestros. La gráfica muestra qué cohorte demográfica específica (por edad y sexo) dentro de esta zona crítica está absorbiendo y generando los montos de reclamación más severos, identificando con precisión la célula de exposición que representa el mayor impacto monetario.
+
+```{r entidad-riesgosa, fig.width=6.5, fig.height=4}
+# Aislamos la entidad número 1 con mayor frecuencia (Ciudad de México)
+entidad.critica <- head(top.5.entidades$ENTIDAD, 1)
+datos.entidad <- subset(datos, ENTIDAD == entidad.critica)
+
+cruce.triple <- aggregate(cbind(`MONTO PAGADO`, `NUMERO DE RECLAMACIONES`) ~ EDAD + SEXO, data = datos.entidad, FUN = sum)
+cruce.triple$Severidad <- ifelse(cruce.triple$`NUMERO DE RECLAMACIONES` > 0,
+                                 cruce.triple$`MONTO PAGADO` / cruce.triple$`NUMERO DE RECLAMACIONES`, 0)
+
+datos.f.triple <- subset(cruce.triple, SEXO %in% c("Femenino", "Mujer", "M", "F"))
+datos.m.triple <- subset(cruce.triple, SEXO %in% c("Masculino", "Hombre", "H"))
+max.sev <- max(cruce.triple$Severidad, na.rm = TRUE)
+
+par(bty = "n", mar = c(4.5, 5.5, 3, 1.5), family = "sans", las = 1)
+plot(datos.f.triple$EDAD, datos.f.triple$Severidad, type = "l", col = "#8e44ad", lwd = 2, ylim = c(0, max.sev * 1.15),
+     xlab = "Edad", ylab = "", 
+     main = paste("Severidad por Edad y Sexo en", entidad.critica), cex.main = 1, col.main = "#333333", cex.axis = 0.8, cex.lab = 0.85)
+mtext("Severidad Promedio (MXN)", side = 2, line = 4.2, las = 0, cex = 0.85)
+lines(datos.m.triple$EDAD, datos.m.triple$Severidad, col = "#27ae60", lwd = 2)
+legend("topleft", legend = c("Femenino", "Masculino"), col = c("#8e44ad", "#27ae60"), lwd = 2, bty = "n", cex = 0.85)
+```
+
+## 3.1 Tabla Tarifaria Final
+
+Como conclusión ejecutiva del modelo de tarificación, se extrae una muestra representativa de las 10 cohortes que (contando con una masa crítica válida mayor a 50 asegurados) arrojan la Prima Pura de Riesgo más alta. Este listado de vulnerabilidad máxima es el insumo final para la estructuración de los tabuladores comerciales de la cartera.
+
+```{r tarifaria}
+tabla.valida <- subset(datos, `NUMERO DE ASEGURADOS` >= 50)
+top.primas <- head(tabla.valida[order(-tabla.valida$Prima_Pura), c("COBERTURA", "ENTIDAD", "EDAD", "SEXO", "Prima_Pura")], 10)
+colnames(top.primas)[5] <- "Prima Pura"
+knitr::kable(top.primas, caption = "Top 10 Cohortes con Mayor Prima Pura de Riesgo", row.names = FALSE, digits = 2)
+```
