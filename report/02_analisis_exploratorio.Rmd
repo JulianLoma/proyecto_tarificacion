@@ -1,125 +1,598 @@
 ---
-title: "Tarificación de Accidentes Personales - Análisis Exploratorio"
-date: "`r Sys.Date()`"
+title: "Proyecto de Tarificación de Accidentes Personales"
+subtitle: "Análisis de la cartera SESAS 2025: Accidentes Personales Individual"
+author: "Equipo de trabajo"
+date: "Noviembre de 2026"
 output:
   pdf_document:
     toc: true
+    toc_depth: 3
+    number_sections: false
+    latex_engine: xelatex
+geometry: margin=2.5cm
+fontsize: 11pt
+lang: es
 ---
 
-```{r setup, include=FALSE}
-knitr::opts_chunk$set(echo = FALSE, warning = FALSE, message = FALSE, fig.align = 'center', out.width = '100%')
+```{r configuracion, include=FALSE}
+knitr::opts_chunk$set(
+  echo = FALSE,
+  warning = FALSE,
+  message = FALSE,
+  fig.align = "center",
+  fig.width = 9,
+  fig.height = 5,
+  dpi = 120
+)
 options(scipen = 999)
-datos <- read.csv("../data/processed/tabla_consolidada_sesas.csv", check.names = FALSE)
+library(readxl)
 ```
 
-## 2.1 Análisis Univariado de Impulsores de Riesgo
+# 1. Introducción y Planteamiento del Análisis
 
-El análisis univariado nos permite observar la distribución aislada de la siniestralidad (frecuencia relativa) sobre factores clave. Esta exploración inicial confirma qué atributos demográficos y comerciales disparan la concentración del riesgo. En el caso del Sexo, se evalúa la exposición diferencial; en Cobertura, el impacto de cada protección; y a nivel estatal, se filtran entidades con masa crítica (>100 asegurados) para definir los focos rojos geográficos de la siniestralidad.
+El presente proyecto tiene como objetivo analizar la experiencia observada de la cartera de **Accidentes Personales Individual** correspondiente a la información SESAS 2025, con la finalidad de identificar factores asociados con las diferencias en la frecuencia y la severidad de las reclamaciones. A partir de estas métricas se construye una estimación empírica de la prima pura de riesgo para los distintos segmentos de la cartera.
 
-```{r univariado}
-# Frecuencia por Sexo
-freq.sexo <- aggregate(cbind(`NUMERO DE ASEGURADOS`, `NUMERO DE RECLAMACIONES`) ~ SEXO, data = datos, FUN = sum)
-freq.sexo$Frecuencia <- freq.sexo$`NUMERO DE RECLAMACIONES` / freq.sexo$`NUMERO DE ASEGURADOS`
-knitr::kable(freq.sexo[order(-freq.sexo$Frecuencia), ], caption = "Frecuencia por Sexo", row.names = FALSE, digits = 6)
+La tarificación de seguros requiere relacionar la exposición al riesgo con el número de reclamaciones y el costo de estas. Por ello, se consideran cuatro variables de segmentación disponibles en las bases: **cobertura, entidad federativa, edad y sexo**. La combinación de estas dimensiones permite estudiar patrones tanto generales como específicos, aunque los resultados deben interpretarse como evidencia descriptiva de la cartera observada y no como relaciones causales.
 
-# Frecuencia por Cobertura
-freq.cob <- aggregate(cbind(`NUMERO DE ASEGURADOS`, `NUMERO DE RECLAMACIONES`) ~ COBERTURA, data = datos, FUN = sum)
-freq.cob$Frecuencia <- freq.cob$`NUMERO DE RECLAMACIONES` / freq.cob$`NUMERO DE ASEGURADOS`
-knitr::kable(freq.cob[order(-freq.cob$Frecuencia), ], caption = "Frecuencia por Cobertura", row.names = FALSE, digits = 6)
+## 1.1. Resumen ejecutivo
 
-# Top 5 Entidades
-freq.entidad <- aggregate(cbind(`NUMERO DE ASEGURADOS`, `NUMERO DE RECLAMACIONES`) ~ ENTIDAD, data = datos, FUN = sum)
-freq.entidad$Frecuencia <- freq.entidad$`NUMERO DE RECLAMACIONES` / freq.entidad$`NUMERO DE ASEGURADOS`
-freq.entidad.valida <- subset(freq.entidad, `NUMERO DE ASEGURADOS` > 100)
-top.5.entidades <- head(freq.entidad.valida[order(-freq.entidad.valida$Frecuencia), ], 5)
-knitr::kable(top.5.entidades, caption = "Top 5 Entidades con Mayor Frecuencia", row.names = FALSE, digits = 6)
+El análisis se desarrolla a partir del cruce de las bases de **Emisión** y **Siniestros**. Primero se organiza la información en cohortes homogéneas; después se calculan los indicadores de frecuencia y severidad, y finalmente se obtiene una prima pura de riesgo observada por cohorte.
+
+Los resultados permiten identificar diferencias entre coberturas, entidades y grupos demográficos. En particular, el análisis por cobertura permite reconocer contratos con distinta intensidad de reclamaciones, mientras que la comparación geográfica y las curvas por edad y sexo ayudan a detectar segmentos que requieren una revisión más detallada. No obstante, una frecuencia elevada no implica por sí sola una prima elevada, ya que el costo promedio de las reclamaciones también interviene en el resultado final.
+
+El producto de este trabajo es un tabulador de las diez cohortes con mayor prima pura observada, sujeto a un umbral mínimo de exposición. Este tabulador constituye un insumo técnico exploratorio, no una propuesta de prima comercial definitiva.
+
+## 1.2. Metodología general
+
+Se siguieron las siguientes etapas: inspección y limpieza de las bases, agregación de exposición y reclamaciones, unión mediante llaves tarifarias comunes, construcción de indicadores, análisis univariado y multivariable, y elaboración del tabulador final. El procesamiento se realizó en **R**, utilizando principalmente funciones de R Base y la librería `readxl` para importar el archivo de Excel.
+
+Para una cohorte $i$, los principales indicadores son:
+
+\[
+\text{Frecuencia}_i = \frac{\text{Número de reclamaciones}_i}{\text{Número de asegurados}_i},
+\]
+
+\[
+\text{Severidad}_i = \frac{\text{Monto pagado}_i}{\text{Número de reclamaciones}_i},
+\qquad \text{cuando existen reclamaciones},
+\]
+
+\[
+\text{Prima pura}_i = \text{Frecuencia}_i\times\text{Severidad}_i.
+\]
+
+La frecuencia representa **reclamaciones por asegurado registrado** en la base y no necesariamente la probabilidad de que una persona presente al menos una reclamación, pues un asegurado podría generar más de una.
+
+# 2. Perfilamiento de Datos y Limpieza
+
+## 2.1. Origen y estructura de la información
+
+La fuente de trabajo es el archivo `2025 AP Individual Bases.xlsx`, con las hojas `Emision` y `Siniestros`. La primera aporta el número de asegurados expuestos y la segunda contiene el número de reclamaciones y los montos pagados. Ambas se importan omitiendo la primera fila, conforme a la estructura utilizada en el procesamiento original.
+
+```{r lectura-datos}
+ruta_archivo <- "data/raw/2025 AP Individual Bases.xlsx"
+
+if (!file.exists(ruta_archivo)) {
+  stop(paste("No se encontró el archivo:", ruta_archivo,
+             "Verifica la carpeta de trabajo del proyecto."))
+}
+
+emision <- as.data.frame(read_excel(ruta_archivo, sheet = "Emision", skip = 1))
+siniestros <- as.data.frame(read_excel(ruta_archivo, sheet = "Siniestros", skip = 1))
+
+perfilamiento <- data.frame(
+  Base = c("Emisión", "Siniestros"),
+  Registros = c(nrow(emision), nrow(siniestros)),
+  Variables = c(ncol(emision), ncol(siniestros))
+)
+
+knitr::kable(perfilamiento, caption = "Tabla 1. Dimensiones iniciales de las bases", align = "c")
 ```
 
-## 2.2 Gráficos Univariados
+## 2.2. Identificación de problemas de calidad
 
-La visualización corporativa evidencia qué tipos de accidentes resultan más costosos (Severidad) y qué estados presentan la mayor siniestralidad (Frecuencia). Este análisis justifica qué coberturas requieren un factor de recargo tarifario por intensidad de pagos y qué entidades presentan una alta repetición de siniestros, consolidando la necesidad de aplicar primas base diferenciadas.
+Antes del cruce se revisaron las dimensiones, los nombres de columnas, el tipo de los datos y los valores ausentes. La edad requiere especial atención, ya que pueden existir registros no numéricos, como la leyenda *No disponible*. Dichos registros no pueden asignarse de manera confiable a una cohorte etaria.
 
-```{r graficos-univariados-sev, fig.width=6.5, fig.height=4.2}
-# Gráfico 1: Severidad por Cobertura
-par(bty = "n", mar = c(4.5, 13.5, 3, 1.5), family = "sans", las = 1)
-sev.cobertura <- aggregate(cbind(`MONTO PAGADO`, `NUMERO DE RECLAMACIONES`) ~ COBERTURA, data = datos, FUN = sum)
-sev.cobertura$Severidad <- ifelse(sev.cobertura$`NUMERO DE RECLAMACIONES` > 0, 
-                                  sev.cobertura$`MONTO PAGADO` / sev.cobertura$`NUMERO DE RECLAMACIONES`, 0)
-sev.cobertura <- sev.cobertura[order(sev.cobertura$Severidad), ]
-max.sev.cob <- max(sev.cobertura$Severidad, na.rm = TRUE)
+```{r diagnostico-faltantes}
+variables_clave <- c("COBERTURA", "ENTIDAD", "EDAD", "SEXO")
+columnas_emision <- c(variables_clave, "NUMERO DE ASEGURADOS")
+columnas_siniestros <- c(variables_clave, "NUMERO DE RECLAMACIONES", "MONTO PAGADO")
 
-barplot(sev.cobertura$Severidad, names.arg = sev.cobertura$COBERTURA, horiz = TRUE,
-        col = "#3498db", border = NA, xlab = "Severidad Promedio (MXN)",
-        xlim = c(0, max.sev.cob * 1.15),
-        main = "Severidad por Tipo de Cobertura", cex.names = 0.7, cex.axis = 0.75, cex.lab = 0.85, cex.main = 1)
+if (!all(columnas_emision %in% names(emision))) {
+  stop("Faltan columnas requeridas en la hoja Emision.")
+}
+if (!all(columnas_siniestros %in% names(siniestros))) {
+  stop("Faltan columnas requeridas en la hoja Siniestros.")
+}
+
+faltantes <- data.frame(
+  Base = rep(c("Emisión", "Siniestros"), each = length(variables_clave)),
+  Variable = rep(variables_clave, times = 2),
+  Faltantes = c(
+    colSums(is.na(emision[variables_clave])),
+    colSums(is.na(siniestros[variables_clave]))
+  )
+)
+
+knitr::kable(faltantes,
+             caption = "Tabla 2. Valores faltantes en las variables de segmentación",
+             align = "c")
 ```
 
-```{r graficos-univariados-freq, fig.width=6.5, fig.height=3.2}
-# Gráfico 2: Frecuencia Top 5 Entidades
-par(bty = "n", mar = c(4.5, 8.5, 3, 1.5), family = "sans", las = 1)
-top.5.plot <- top.5.entidades[order(top.5.entidades$Frecuencia), ]
-max.freq.ent <- max(top.5.plot$Frecuencia, na.rm = TRUE)
+## 2.3. Limpieza y preparación de llaves tarifarias
 
-barplot(top.5.plot$Frecuencia, names.arg = top.5.plot$ENTIDAD, horiz = TRUE,
-        col = "#e67e22", border = NA, xlab = "Frecuencia Relativa",
-        xlim = c(0, max.freq.ent * 1.15),
-        main = "Top 5 Entidades con Mayor Frecuencia", cex.names = 0.8, cex.axis = 0.75, cex.lab = 0.85, cex.main = 1)
+Se convirtió `EDAD` a una variable numérica y se descartaron los registros cuya edad no pudo determinarse. Se conservaron como llaves comunes **COBERTURA, ENTIDAD, EDAD y SEXO**. Esta decisión permite formar segmentos comparables entre emisión y siniestros, aunque también implica que los registros sin edad válida no participan en los cálculos posteriores.
+
+```{r limpieza}
+registros_antes <- c(nrow(emision), nrow(siniestros))
+
+emision$EDAD <- suppressWarnings(as.numeric(emision$EDAD))
+siniestros$EDAD <- suppressWarnings(as.numeric(siniestros$EDAD))
+
+emision <- subset(emision, !is.na(EDAD))
+siniestros <- subset(siniestros, !is.na(EDAD))
+
+resumen_limpieza <- data.frame(
+  Base = c("Emisión", "Siniestros"),
+  Registros_originales = registros_antes,
+  Registros_validos = c(nrow(emision), nrow(siniestros)),
+  Registros_excluidos = registros_antes - c(nrow(emision), nrow(siniestros))
+)
+
+knitr::kable(resumen_limpieza,
+             caption = "Tabla 3. Registros conservados después de validar la edad",
+             align = "c")
 ```
 
-## 2.3 Análisis Multivariable: Frecuencia (Edad vs. Sexo)
+# 3. Consolidación de la Cartera y Cruce de Información
 
-El cruce de llaves tarifarias permite mapear la evolución de la siniestralidad (hombres vs. mujeres) en función de la edad. Se observa que el riesgo no es constante; las curvas exponen divergencias o cruces demográficos críticos a lo largo del tiempo, evidenciando ventanas de edad en donde un sexo asume desproporcionadamente una mayor frecuencia de siniestros, dictando recargos por edad alcanzada.
+Para que las bases puedan compararse, los asegurados se agregaron por las llaves tarifarias comunes. De manera independiente, las reclamaciones y el monto pagado se agregaron con las mismas llaves. Posteriormente se realizó una unión izquierda (*left join*) que conserva las cohortes de emisión, aun cuando no tengan coincidencia en siniestros.
 
-```{r edad-sexo, fig.width=6.5, fig.height=4}
-freq.edad.sexo <- aggregate(cbind(`NUMERO DE ASEGURADOS`, `NUMERO DE RECLAMACIONES`) ~ EDAD + SEXO, data = datos, FUN = sum)
-freq.edad.sexo$Frecuencia <- freq.edad.sexo$`NUMERO DE RECLAMACIONES` / freq.edad.sexo$`NUMERO DE ASEGURADOS`
+En estos últimos casos, el número de reclamaciones y el monto pagado se registran como cero. Esta imputación se utiliza para los grupos presentes en emisión que no presentan coincidencias en la base de siniestros; no debe confundirse con la sustitución indiscriminada de información faltante dentro de registros de siniestros.
 
-datos.f <- subset(freq.edad.sexo, SEXO %in% c("Femenino", "Mujer", "M", "F"))
-datos.m <- subset(freq.edad.sexo, SEXO %in% c("Masculino", "Hombre", "H"))
-max.freq <- max(freq.edad.sexo$Frecuencia, na.rm = TRUE)
+```{r cruce-cartera}
+llaves <- c("COBERTURA", "ENTIDAD", "EDAD", "SEXO")
 
-par(bty = "n", mar = c(4.5, 5.5, 3, 1.5), family = "sans", las = 1)
-plot(datos.f$EDAD, datos.f$Frecuencia, type = "l", col = "#2c3e50", lwd = 2, ylim = c(0, max.freq * 1.15),
-     xlab = "Edad", ylab = "", 
-     main = "Curva de Frecuencia por Edad y Sexo", cex.main = 1, col.main = "#333333", cex.axis = 0.8, cex.lab = 0.85)
-mtext("Frecuencia de Siniestralidad", side = 2, line = 4.2, las = 0, cex = 0.85)
-lines(datos.m$EDAD, datos.m$Frecuencia, col = "#e74c3c", lwd = 2)
-legend("topleft", legend = c("Femenino", "Masculino"), col = c("#2c3e50", "#e74c3c"), lwd = 2, bty = "n", cex = 0.85)
+asegurados_agrup <- aggregate(
+  `NUMERO DE ASEGURADOS` ~ COBERTURA + ENTIDAD + EDAD + SEXO,
+  data = emision, FUN = sum, na.rm = TRUE
+)
+
+reclamaciones_agrup <- aggregate(
+  cbind(`NUMERO DE RECLAMACIONES`, `MONTO PAGADO`) ~
+    COBERTURA + ENTIDAD + EDAD + SEXO,
+  data = siniestros, FUN = sum, na.rm = TRUE
+)
+
+tabla_cruce <- merge(
+  asegurados_agrup, reclamaciones_agrup,
+  by = llaves, all.x = TRUE
+)
+
+tabla_cruce$`NUMERO DE RECLAMACIONES`[
+  is.na(tabla_cruce$`NUMERO DE RECLAMACIONES`)
+] <- 0
+
+tabla_cruce$`MONTO PAGADO`[
+  is.na(tabla_cruce$`MONTO PAGADO`)
+] <- 0
+
+tabla_cruce$Frecuencia <- ifelse(
+  tabla_cruce$`NUMERO DE ASEGURADOS` > 0,
+  tabla_cruce$`NUMERO DE RECLAMACIONES` /
+    tabla_cruce$`NUMERO DE ASEGURADOS`, NA_real_
+)
+
+tabla_cruce$Severidad <- ifelse(
+  tabla_cruce$`NUMERO DE RECLAMACIONES` > 0,
+  tabla_cruce$`MONTO PAGADO` /
+    tabla_cruce$`NUMERO DE RECLAMACIONES`, 0
+)
+
+tabla_cruce$Prima_Pura <- tabla_cruce$Frecuencia * tabla_cruce$Severidad
+
+frecuencia_nacional <- sum(tabla_cruce$`NUMERO DE RECLAMACIONES`) /
+  sum(tabla_cruce$`NUMERO DE ASEGURADOS`)
+
+resumen_cartera <- data.frame(
+  Indicador = c("Cohortes consolidadas", "Asegurados registrados",
+                "Reclamaciones registradas", "Frecuencia agregada"),
+  Valor = c(
+    format(nrow(tabla_cruce), big.mark = ","),
+    format(sum(tabla_cruce$`NUMERO DE ASEGURADOS`), big.mark = ","),
+    format(sum(tabla_cruce$`NUMERO DE RECLAMACIONES`), big.mark = ","),
+    sprintf("%.6f", frecuencia_nacional)
+  )
+)
+
+knitr::kable(resumen_cartera,
+             caption = "Tabla 4. Resumen de la cartera consolidada")
 ```
 
-## 2.4 Cruce Multivariable Específico: Severidad en Entidad Crítica
+La frecuencia agregada es el cociente entre el total de reclamaciones y el total de asegurados registrados **en las filas de exposición consideradas**. Si una misma persona aparece en distintas coberturas, este denominador no debe interpretarse automáticamente como un conteo de personas únicas.
 
-Para realizar un análisis factorial de profundidad, se aisló el estado (Entidad) con el índice más alto de siniestros. La gráfica muestra qué cohorte demográfica específica (por edad y sexo) dentro de esta zona crítica está absorbiendo y generando los montos de reclamación más severos, identificando con precisión la célula de exposición que representa el mayor impacto monetario.
+# 4. Análisis Exploratorio de Impulsores de Riesgo (Univariado)
 
-```{r entidad-riesgosa, fig.width=6.5, fig.height=4}
-# Aislamos la entidad número 1 con mayor frecuencia (Ciudad de México)
-entidad.critica <- head(top.5.entidades$ENTIDAD, 1)
-datos.entidad <- subset(datos, ENTIDAD == entidad.critica)
+El análisis univariado estudia cómo se distribuye la frecuencia de reclamaciones al considerar por separado las variables **sexo, cobertura y entidad federativa**. En cada caso, la frecuencia se calcula como el cociente entre el total de reclamaciones y el total de asegurados del grupo; no como un promedio simple de frecuencias individuales de las cohortes.
 
-cruce.triple <- aggregate(cbind(`MONTO PAGADO`, `NUMERO DE RECLAMACIONES`) ~ EDAD + SEXO, data = datos.entidad, FUN = sum)
-cruce.triple$Severidad <- ifelse(cruce.triple$`NUMERO DE RECLAMACIONES` > 0,
-                                 cruce.triple$`MONTO PAGADO` / cruce.triple$`NUMERO DE RECLAMACIONES`, 0)
+## 4.1. Frecuencia de reclamaciones por sexo
 
-datos.f.triple <- subset(cruce.triple, SEXO %in% c("Femenino", "Mujer", "M", "F"))
-datos.m.triple <- subset(cruce.triple, SEXO %in% c("Masculino", "Hombre", "H"))
-max.sev <- max(cruce.triple$Severidad, na.rm = TRUE)
+La comparación por sexo permite observar posibles diferencias en la frecuencia registrada en la cartera. Sin embargo, las diferencias descriptivas no son suficientes para establecer una relación causal ni para justificar recargos automáticos; antes sería necesario considerar la composición por edad, cobertura, exposición y la estabilidad estadística de los resultados.
 
-par(bty = "n", mar = c(4.5, 5.5, 3, 1.5), family = "sans", las = 1)
-plot(datos.f.triple$EDAD, datos.f.triple$Severidad, type = "l", col = "#8e44ad", lwd = 2, ylim = c(0, max.sev * 1.15),
-     xlab = "Edad", ylab = "", 
-     main = paste("Severidad por Edad y Sexo en", entidad.critica), cex.main = 1, col.main = "#333333", cex.axis = 0.8, cex.lab = 0.85)
-mtext("Severidad Promedio (MXN)", side = 2, line = 4.2, las = 0, cex = 0.85)
-lines(datos.m.triple$EDAD, datos.m.triple$Severidad, col = "#27ae60", lwd = 2)
-legend("topleft", legend = c("Femenino", "Masculino"), col = c("#8e44ad", "#27ae60"), lwd = 2, bty = "n", cex = 0.85)
+```{r frecuencia-sexo}
+freq_sexo <- aggregate(
+  cbind(`NUMERO DE ASEGURADOS`, `NUMERO DE RECLAMACIONES`) ~ SEXO,
+  data = tabla_cruce, FUN = sum
+)
+
+freq_sexo$Frecuencia <- with(
+  freq_sexo, `NUMERO DE RECLAMACIONES` / `NUMERO DE ASEGURADOS`
+)
+freq_sexo <- freq_sexo[order(-freq_sexo$Frecuencia), ]
+
+knitr::kable(freq_sexo,
+             caption = "Tabla 5. Frecuencia observada por sexo",
+             col.names = c("Sexo", "Asegurados", "Reclamaciones", "Frecuencia"),
+             digits = 6, align = "c")
 ```
 
-## 3.1 Tabla Tarifaria Final
+## 4.2. Frecuencia de reclamaciones por cobertura
 
-Como conclusión ejecutiva del modelo de tarificación, se extrae una muestra representativa de las 10 cohortes que (contando con una masa crítica válida mayor a 50 asegurados) arrojan la Prima Pura de Riesgo más alta. Este listado de vulnerabilidad máxima es el insumo final para la estructuración de los tabuladores comerciales de la cartera.
+La cobertura constituye un elemento central en el análisis, pues diferentes beneficios pueden generar distinta frecuencia de reclamaciones. La comparación permite identificar cuáles presentan mayor número de reclamaciones por asegurado y cuáles aparecen con menor frecuencia en la experiencia observada. No obstante, la definición de una prima requiere incorporar también los montos pagados y, por tanto, la severidad.
 
-```{r tarifaria}
-tabla.valida <- subset(datos, `NUMERO DE ASEGURADOS` >= 50)
-top.primas <- head(tabla.valida[order(-tabla.valida$Prima_Pura), c("COBERTURA", "ENTIDAD", "EDAD", "SEXO", "Prima_Pura")], 10)
-colnames(top.primas)[5] <- "Prima Pura"
-knitr::kable(top.primas, caption = "Top 10 Cohortes con Mayor Prima Pura de Riesgo", row.names = FALSE, digits = 2)
+```{r frecuencia-cobertura}
+freq_cobertura <- aggregate(
+  cbind(`NUMERO DE ASEGURADOS`, `NUMERO DE RECLAMACIONES`) ~ COBERTURA,
+  data = tabla_cruce, FUN = sum
+)
+
+freq_cobertura$Frecuencia <- with(
+  freq_cobertura, `NUMERO DE RECLAMACIONES` / `NUMERO DE ASEGURADOS`
+)
+freq_cobertura <- freq_cobertura[order(-freq_cobertura$Frecuencia), ]
+
+knitr::kable(freq_cobertura,
+             caption = "Tabla 6. Frecuencia observada por cobertura",
+             col.names = c("Cobertura", "Asegurados", "Reclamaciones", "Frecuencia"),
+             digits = 6, align = "c")
+```
+
+## 4.3. Concentración geográfica de la frecuencia
+
+Para la comparación por entidad federativa se utiliza un criterio mínimo de exposición: **únicamente se consideran entidades con más de 100 asegurados registrados**. A partir de estas entidades se seleccionan las cinco mayores frecuencias. Este filtro reduce la presencia de cocientes calculados sobre denominadores extremadamente pequeños, pero no garantiza por sí solo estabilidad estadística.
+
+```{r frecuencia-entidad}
+freq_entidad <- aggregate(
+  cbind(`NUMERO DE ASEGURADOS`, `NUMERO DE RECLAMACIONES`) ~ ENTIDAD,
+  data = tabla_cruce, FUN = sum
+)
+
+freq_entidad$Frecuencia <- with(
+  freq_entidad, `NUMERO DE RECLAMACIONES` / `NUMERO DE ASEGURADOS`
+)
+
+freq_entidad_valida <- subset(
+  freq_entidad, `NUMERO DE ASEGURADOS` > 100 & is.finite(Frecuencia)
+)
+
+top_5_entidades <- head(
+  freq_entidad_valida[order(-freq_entidad_valida$Frecuencia), ], 5
+)
+
+knitr::kable(top_5_entidades,
+             caption = "Tabla 7. Cinco entidades con mayor frecuencia observada",
+             col.names = c("Entidad", "Asegurados", "Reclamaciones", "Frecuencia"),
+             digits = 6, align = "c")
+```
+
+```{r grafico-entidades, fig.cap="Gráfico 1. Entidades con mayor frecuencia observada (más de 100 asegurados).", fig.height=4.8}
+if (nrow(top_5_entidades) > 0) {
+  graf_entidades <- top_5_entidades[
+    order(top_5_entidades$Frecuencia),
+  ]
+  par(mar = c(5, 11, 3, 2), las = 1, bty = "n")
+  barplot(
+    graf_entidades$Frecuencia,
+    names.arg = graf_entidades$ENTIDAD,
+    horiz = TRUE,
+    col = "#e67e22", border = NA,
+    xlab = "Reclamaciones por asegurado",
+    main = "Top 5: frecuencia por entidad",
+    cex.names = 0.85
+  )
+} else {
+  plot.new()
+  text(0.5, 0.5, "No hay entidades que cumplan el filtro de exposición")
+}
+```
+
+La lectura del gráfico permite señalar concentraciones relativas dentro de las entidades que cumplen el criterio de exposición. No permite concluir, sin información adicional, que las diferencias obedezcan directamente a tránsito, infraestructura, condiciones de salud u otras características territoriales.
+
+# 5. Análisis Multivariable: Fluctuaciones por Edad y Sexo
+
+A diferencia de la comparación univariada, el análisis por edad y sexo estudia simultáneamente dos características de la población asegurada. Su propósito es observar si las frecuencias siguen patrones semejantes o presentan fluctuaciones distintas a lo largo de las edades disponibles.
+
+```{r preparar-edad-sexo}
+freq_edad_sexo <- aggregate(
+  cbind(`NUMERO DE ASEGURADOS`, `NUMERO DE RECLAMACIONES`) ~ EDAD + SEXO,
+  data = tabla_cruce, FUN = sum
+)
+
+freq_edad_sexo$Frecuencia <- ifelse(
+  freq_edad_sexo$`NUMERO DE ASEGURADOS` > 0,
+  freq_edad_sexo$`NUMERO DE RECLAMACIONES` /
+    freq_edad_sexo$`NUMERO DE ASEGURADOS`, NA_real_
+)
+
+# Se conservan las convenciones de sexo del script original.
+datos_f <- subset(freq_edad_sexo,
+                  SEXO %in% c("Femenino", "Mujer", "M", "F") &
+                    is.finite(Frecuencia))
+datos_m <- subset(freq_edad_sexo,
+                  SEXO %in% c("Masculino", "Hombre", "H") &
+                    is.finite(Frecuencia))
+
+datos_f <- datos_f[order(datos_f$EDAD), ]
+datos_m <- datos_m[order(datos_m$EDAD), ]
+```
+
+```{r grafico-edad-sexo, fig.cap="Gráfico 2. Frecuencia observada por edad y sexo.", fig.height=5.2}
+par(mar = c(5, 5, 3, 2), bty = "n")
+
+if (nrow(datos_f) > 0 || nrow(datos_m) > 0) {
+  valores <- c(datos_f$Frecuencia, datos_m$Frecuencia)
+  edades <- c(datos_f$EDAD, datos_m$EDAD)
+  limite_y <- max(valores, na.rm = TRUE)
+  if (!is.finite(limite_y) || limite_y <= 0) limite_y <- 1
+
+  plot(range(edades), c(0, limite_y * 1.05), type = "n",
+       xlab = "Edad", ylab = "Reclamaciones por asegurado",
+       main = "Curva de frecuencia por edad y sexo")
+  if (nrow(datos_f) > 0) {
+    lines(datos_f$EDAD, datos_f$Frecuencia,
+          col = "#2c3e50", lwd = 2.2)
+  }
+  if (nrow(datos_m) > 0) {
+    lines(datos_m$EDAD, datos_m$Frecuencia,
+          col = "#e74c3c", lwd = 2.2)
+  }
+  leyendas <- c(if (nrow(datos_f) > 0) "Femenino",
+               if (nrow(datos_m) > 0) "Masculino")
+  colores <- c(if (nrow(datos_f) > 0) "#2c3e50",
+               if (nrow(datos_m) > 0) "#e74c3c")
+  legend("topleft", legend = leyendas, col = colores,
+         lwd = 2.2, bty = "n")
+} else {
+  plot.new()
+  text(0.5, 0.5, "No hay datos válidos para las etiquetas de sexo definidas")
+}
+```
+
+## 5.1. Comportamiento en edades tempranas (0 a 20 años)
+
+En edades tempranas pueden presentarse oscilaciones considerables de la frecuencia entre edades consecutivas. Para interpretarlas es indispensable revisar cuántos asegurados y reclamaciones sostienen cada punto: una frecuencia elevada sobre una exposición pequeña puede reflejar la inestabilidad del cociente y no necesariamente un cambio estructural del riesgo.
+
+## 5.2. Comportamiento durante la edad adulta (20 a 70 años)
+
+La comparación de las curvas en las edades adultas permite explorar si la frecuencia presenta períodos relativamente estables y si existen diferencias persistentes entre sexos. La estabilidad debe evaluarse con apoyo de los denominadores, evitando interpretar una curva aparentemente plana como evidencia de riesgo idéntico en todas las edades.
+
+## 5.3. Comportamiento en edades avanzadas (70 años en adelante)
+
+En edades avanzadas las curvas pueden presentar incrementos, descensos o fluctuaciones pronunciadas. Estas variaciones merecen una revisión especial debido a la posible disminución de la exposición disponible. En particular, una frecuencia cercana a cero a edades extremas no demuestra ausencia de riesgo, ni puede atribuirse directamente a diferencias de esperanza de vida sin analizar la composición y el tamaño de la población expuesta.
+
+Por lo anterior, las curvas por edad y sexo son una herramienta descriptiva inicial. Su utilización para proponer factores tarifarios requiere comprobar la suficiencia de datos y considerar procedimientos de graduación o agrupación de edades cuando corresponda.
+
+# 6. Cruce Multivariable Específico: Severidad en Entidades Críticas
+
+El análisis geográfico identificó las entidades con mayor frecuencia observada dentro del filtro aplicado. A continuación se examina la severidad por edad y sexo **en la entidad que ocupa el primer lugar de esa clasificación**, conservando así la lógica del procesamiento original. El objetivo es distinguir el comportamiento del **costo promedio por reclamación** del comportamiento de la frecuencia.
+
+La severidad puede ser particularmente variable cuando el número de reclamaciones es reducido. Por esta razón, en la gráfica se muestran únicamente edades y sexos con al menos una reclamación registrada; los grupos sin reclamaciones no tienen una severidad observada estimable, aunque se les haya asignado cero por conveniencia de cálculo en la tabla consolidada.
+
+```{r preparar-severidad-entidad}
+if (nrow(top_5_entidades) == 0) {
+  entidad_critica <- NA_character_
+  cruce_triple <- data.frame()
+  datos_f_triple <- data.frame()
+  datos_m_triple <- data.frame()
+} else {
+  entidad_critica <- as.character(top_5_entidades$ENTIDAD[1])
+  datos_entidad <- subset(tabla_cruce, ENTIDAD == entidad_critica)
+
+  cruce_triple <- aggregate(
+    cbind(`MONTO PAGADO`, `NUMERO DE RECLAMACIONES`) ~ EDAD + SEXO,
+    data = datos_entidad, FUN = sum
+  )
+  cruce_triple$Severidad <- ifelse(
+    cruce_triple$`NUMERO DE RECLAMACIONES` > 0,
+    cruce_triple$`MONTO PAGADO` /
+      cruce_triple$`NUMERO DE RECLAMACIONES`, NA_real_
+  )
+
+  datos_f_triple <- subset(cruce_triple,
+                          SEXO %in% c("Femenino", "Mujer", "M", "F") &
+                            `NUMERO DE RECLAMACIONES` > 0 &
+                            is.finite(Severidad))
+  datos_m_triple <- subset(cruce_triple,
+                          SEXO %in% c("Masculino", "Hombre", "H") &
+                            `NUMERO DE RECLAMACIONES` > 0 &
+                            is.finite(Severidad))
+  datos_f_triple <- datos_f_triple[order(datos_f_triple$EDAD), ]
+  datos_m_triple <- datos_m_triple[order(datos_m_triple$EDAD), ]
+}
+```
+
+```{r grafico-severidad-entidad, fig.cap="Gráfico 3. Severidad por edad y sexo en la entidad de mayor frecuencia del Top 5.", fig.height=5.2}
+par(mar = c(5, 5, 3, 2), bty = "n")
+if (nrow(datos_f_triple) > 0 || nrow(datos_m_triple) > 0) {
+  valores <- c(datos_f_triple$Severidad, datos_m_triple$Severidad)
+  edades <- c(datos_f_triple$EDAD, datos_m_triple$EDAD)
+  limite_y <- max(valores, na.rm = TRUE)
+  if (!is.finite(limite_y) || limite_y <= 0) limite_y <- 1
+
+  plot(range(edades), c(0, limite_y * 1.05), type = "n",
+       xlab = "Edad", ylab = "Monto pagado por reclamación ($)",
+       main = paste("Severidad por edad y sexo en", entidad_critica))
+  if (nrow(datos_f_triple) > 0) {
+    lines(datos_f_triple$EDAD, datos_f_triple$Severidad,
+          col = "#8e44ad", lwd = 2.2)
+  }
+  if (nrow(datos_m_triple) > 0) {
+    lines(datos_m_triple$EDAD, datos_m_triple$Severidad,
+          col = "#27ae60", lwd = 2.2)
+  }
+  leyendas <- c(if (nrow(datos_f_triple) > 0) "Femenino",
+               if (nrow(datos_m_triple) > 0) "Masculino")
+  colores <- c(if (nrow(datos_f_triple) > 0) "#8e44ad",
+               if (nrow(datos_m_triple) > 0) "#27ae60")
+  legend("topleft", legend = leyendas, col = colores, lwd = 2.2, bty = "n")
+} else {
+  plot.new()
+  text(0.5, 0.5, "No hay reclamaciones suficientes para construir esta gráfica")
+}
+```
+
+El gráfico permite describir diferencias observadas de costo entre edades y sexos dentro de una entidad específica. Hipótesis relacionadas con la concentración urbana, la utilización de servicios médicos o los costos de atención podrían investigarse posteriormente, pero **no se desprenden directamente de este cruce**. La principal implicación técnica es que la ubicación geográfica puede ser una variable útil para explorar, siempre junto con la exposición, la frecuencia y la severidad.
+
+# 7. Conclusión Ejecutiva: Lineamientos para el Diseño de la Prima
+
+La integración de las bases de emisión y siniestros mediante R Base permitió construir una cartera consolidada por cobertura, entidad, edad y sexo, y calcular tres indicadores centrales para el análisis actuarial: frecuencia, severidad y prima pura observada. Los cruces realizados muestran que un diseño tarifario no debería basarse en una sola característica de la cartera.
+
+**Diferenciación por cobertura.** Es razonable considerar estructuras de prima distintas por cobertura, puesto que tanto la frecuencia como el costo promedio de las reclamaciones pueden diferir entre beneficios. La decisión final debe fundamentarse en la prima pura conjunta y no únicamente en la frecuencia.
+
+**Revisión geográfica.** Las entidades que aparecen en los primeros lugares de frecuencia, incluida cualquier entidad que destaque en el Top 5, constituyen candidatas para un análisis más profundo. Un posible factor geográfico necesitaría sustentarse también en diferencias de prima pura, volumen de exposición y estabilidad de la experiencia; no corresponde imponer un recargo con base exclusiva en un ranking descriptivo.
+
+**Segmentación por edad y sexo.** Las curvas exploratorias permiten identificar edades donde sería conveniente ampliar el análisis. No se recomienda establecer incrementos automáticos, ni mucho menos exponenciales, solo por observar picos en la gráfica. Antes de modificar la tarifa se requeriría evaluar la credibilidad de los datos, la composición de la cartera y las disposiciones aplicables al diseño del producto.
+
+**Actualización financiera.** La experiencia de pagos observada en 2025 constituye una base histórica. Si se utilizara para períodos futuros, sería necesario estudiar por separado la evolución de costos, la inflación pertinente, los gastos y otros supuestos técnicos. Estos componentes no están incorporados en la prima pura empírica calculada en el presente reporte.
+
+En conjunto, el proyecto proporciona una primera aproximación cuantitativa a los impulsores de riesgo y permite priorizar los segmentos que ameritan mayor revisión. La recomendación principal es utilizar los resultados como insumo exploratorio para una futura modelación tarifaria, evitando interpretar asociaciones descriptivas como pruebas de causalidad.
+
+# 8. Integración Financiera: Severidad y Cálculo de Prima Pura
+
+## 8.1. Construcción del indicador de severidad
+
+La incorporación de la variable `MONTO PAGADO` permite complementar la frecuencia con una medición monetaria. Para cada cohorte $i$, la severidad se calcula mediante:
+
+\[
+S_i =
+\begin{cases}
+\dfrac{M_i}{N_i}, & N_i > 0, \\
+0, & N_i = 0,
+\end{cases}
+\]
+
+siendo $M_i$ el monto total pagado y $N_i$ el número de reclamaciones. El valor cero cuando $N_i=0$ es una **convención computacional**, no una estimación de que el costo esperado futuro sea nulo. Técnicamente, cuando no hay reclamaciones no existe una severidad media observada para esa cohorte.
+
+Para complementar la interpretación se presenta la severidad agregada por cobertura, calculada dividiendo el monto pagado total entre el total de reclamaciones de cada cobertura.
+
+```{r severidad-cobertura}
+sev_cobertura <- aggregate(
+  cbind(`MONTO PAGADO`, `NUMERO DE RECLAMACIONES`) ~ COBERTURA,
+  data = tabla_cruce, FUN = sum
+)
+
+sev_cobertura$Severidad <- ifelse(
+  sev_cobertura$`NUMERO DE RECLAMACIONES` > 0,
+  sev_cobertura$`MONTO PAGADO` /
+    sev_cobertura$`NUMERO DE RECLAMACIONES`, NA_real_
+)
+
+sev_cobertura <- sev_cobertura[order(-sev_cobertura$Severidad), ]
+
+knitr::kable(sev_cobertura,
+             caption = "Tabla 8. Severidad observada por cobertura",
+             col.names = c("Cobertura", "Monto pagado ($)",
+                           "Reclamaciones", "Severidad ($)"),
+             digits = 2, align = "c")
+```
+
+```{r grafico-severidad-cobertura, fig.cap="Gráfico 4. Severidad observada por cobertura.", fig.height=6.2}
+sev_plot <- subset(sev_cobertura, is.finite(Severidad))
+if (nrow(sev_plot) > 0) {
+  sev_plot <- sev_plot[order(sev_plot$Severidad), ]
+  par(mar = c(5, 13, 3, 2), las = 1, bty = "n")
+  barplot(sev_plot$Severidad,
+          names.arg = sev_plot$COBERTURA,
+          horiz = TRUE, col = "#3498db", border = NA,
+          xlab = "Monto pagado por reclamación ($)",
+          main = "Severidad por cobertura", cex.names = 0.75)
+} else {
+  plot.new()
+  text(0.5, 0.5, "No existen coberturas con severidad estimable")
+}
+```
+
+## 8.2. Cálculo de la prima pura de riesgo
+
+La prima pura observada combina la frecuencia y la severidad de cada cohorte:
+
+\[
+PP_i = F_i\times S_i.
+\]
+
+Cuando existen asegurados y reclamaciones, puede expresarse de manera equivalente como:
+
+\[
+PP_i = \frac{N_i}{A_i}\times\frac{M_i}{N_i}
+     = \frac{M_i}{A_i},
+\]
+
+siendo $A_i$ el número de asegurados registrados de la cohorte. Por tanto, la prima pura aquí estimada equivale al **monto pagado observado por asegurado registrado**. Esto no la convierte automáticamente en una prima comercial: no incorpora gastos, utilidad, márgenes de seguridad, proyección temporal ni otras consideraciones contractuales.
+
+```{r verificacion-prima-pura}
+tabla_cruce$Prima_Pura <- tabla_cruce$Frecuencia * tabla_cruce$Severidad
+
+# Comprobación de la equivalencia: monto pagado / asegurados.
+comprobacion <- subset(tabla_cruce,
+                       `NUMERO DE ASEGURADOS` > 0 &
+                         is.finite(Prima_Pura))
+
+diferencia_maxima <- if (nrow(comprobacion) > 0) {
+  max(abs(
+    comprobacion$Prima_Pura -
+      comprobacion$`MONTO PAGADO` / comprobacion$`NUMERO DE ASEGURADOS`
+  ))
+} else {
+  NA_real_
+}
+
+cat("Diferencia máxima por redondeo en la equivalencia:",
+    format(diferencia_maxima, scientific = TRUE), "\n")
+```
+
+# 9. Tabulador de Exposición Crítica (Resultados Finales)
+
+Como resultado final se seleccionan las **diez cohortes de mayor prima pura de riesgo observada**, definidas por cobertura, entidad, edad y sexo. Para reducir la influencia de segmentos con exposición muy reducida, se incluyen únicamente las cohortes con **al menos 50 asegurados registrados**. El umbral es un criterio operativo de selección y no garantiza por sí mismo la credibilidad actuarial de cada celda.
+
+La tabla se ordena de mayor a menor prima pura. Su contenido permite localizar segmentos que ameritan revisión, pero no presupone que las diez posiciones correspondan a una cobertura, entidad, edad o sexo determinados: esa interpretación depende de los resultados efectivamente calculados.
+
+```{r top-10-primas}
+tabla_valida <- subset(
+  tabla_cruce,
+  `NUMERO DE ASEGURADOS` >= 50 & is.finite(Prima_Pura)
+)
+
+top_primas <- head(
+  tabla_valida[
+    order(-tabla_valida$Prima_Pura),
+    c("COBERTURA", "ENTIDAD", "EDAD", "SEXO", "Prima_Pura")
+  ], 10
+)
+
+knitr::kable(
+  top_primas,
+  caption = "Tabla 9. Top 10 cohortes tarifarias (mayor prima pura de riesgo)",
+  col.names = c("Cobertura", "Entidad", "Edad", "Sexo",
+                "Prima pura de riesgo ($)"),
+  digits = 2, align = "c"
+)
+```
+
+En conclusión, la clasificación final integra el componente de frecuencia con el costo económico de las reclamaciones. Las cohortes destacadas representan prioridades de análisis dentro de la experiencia de 2025, no una validación definitiva de tarifas futuras. 
+
+```{r exportar-datos, include=FALSE}
+dir.create("data/processed", recursive = TRUE, showWarnings = FALSE)
+write.csv(tabla_cruce,
+          "data/processed/tabla_consolidada_sesas.csv",
+          row.names = FALSE)
 ```

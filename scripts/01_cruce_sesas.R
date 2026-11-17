@@ -168,8 +168,8 @@ legend("topleft", legend = c("Femenino", "Masculino"), col = c("#2c3e50", "#e74c
 # 2.4 Cruce Multivariable: Severidad por Edad y Sexo en la Entidad más Riesgosa
 # ------------------------------------------------------------------------------
 
-# Extraemos el nombre de la entidad con más riesgo del cálculo anterior
-entidad_critica <- tail(top_5_entidades$ENTIDAD, 1)
+# CORRECCIÓN: Usamos head(..., 1) para extraer el 1er lugar (Ciudad de México) en vez del 5to
+entidad_critica <- head(top_5_entidades$ENTIDAD, 1)
 
 # Filtramos la tabla de cruce solo para esta entidad
 datos_entidad <- subset(tabla_cruce, ENTIDAD == entidad_critica)
@@ -179,22 +179,30 @@ cruce_triple <- aggregate(cbind(`MONTO PAGADO`, `NUMERO DE RECLAMACIONES`) ~ EDA
 cruce_triple$Severidad <- ifelse(cruce_triple$`NUMERO DE RECLAMACIONES` > 0,
                                  cruce_triple$`MONTO PAGADO` / cruce_triple$`NUMERO DE RECLAMACIONES`, 0)
 
-datos_f_triple <- subset(cruce_triple, SEXO == "Femenino" | SEXO == "Mujer" | SEXO == "M" | SEXO == "F")
-datos_m_triple <- subset(cruce_triple, SEXO == "Masculino" | SEXO == "Hombre" | SEXO == "H")
+datos_f_triple <- subset(cruce_triple, SEXO %in% c("Femenino", "Mujer", "M", "F"))
+datos_m_triple <- subset(cruce_triple, SEXO %in% c("Masculino", "Hombre", "H"))
 
-max_sev <- max(cruce_triple$Severidad, na.rm = TRUE)
+par(bty = "n", mar = c(5, 5, 4, 2), family = "sans", las = 1)
 
-# Gráfico de Líneas para el Cruce Triple
-plot(datos_f_triple$EDAD, datos_f_triple$Severidad, type = "l", 
-     col = "#8e44ad", lwd = 2.5, ylim = c(0, max_sev),
-     xlab = "Edad", ylab = "Severidad Promedio ($)",
-     main = paste("Severidad por Edad y Sexo en", entidad_critica),
-     cex.main = 1.1, col.main = "#333333")
-
-lines(datos_m_triple$EDAD, datos_m_triple$Severidad, col = "#27ae60", lwd = 2.5)
-
-legend("topleft", legend = c("Femenino", "Masculino"), 
-       col = c("#8e44ad", "#27ae60"), lwd = 2.5, bty = "n", cex = 0.9)
+# Antes de graficar, verificamos que ambas tablas tengan al menos un registro válido
+if(nrow(datos_f_triple) > 0 & nrow(datos_m_triple) > 0) {
+  
+  max_sev <- max(cruce_triple$Severidad, na.rm = TRUE)
+  
+  plot(datos_f_triple$EDAD, datos_f_triple$Severidad, type = "l", 
+       col = "#8e44ad", lwd = 2.5, ylim = c(0, max_sev),
+       xlab = "Edad", ylab = "Severidad Promedio ($)",
+       main = paste("Severidad por Edad y Sexo en", entidad_critica),
+       cex.main = 1.1, col.main = "#333333")
+  
+  lines(datos_m_triple$EDAD, datos_m_triple$Severidad, col = "#27ae60", lwd = 2.5)
+  
+  legend("topleft", legend = c("Femenino", "Masculino"), 
+         col = c("#8e44ad", "#27ae60"), lwd = 2.5, bty = "n", cex = 0.9)
+         
+} else {
+  cat("\nNota: No hay suficientes datos válidos para graficar la severidad en", entidad_critica, "\n")
+}
 
 
 # ==============================================================================
